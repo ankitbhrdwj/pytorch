@@ -65,6 +65,7 @@ if(NOT MSVC)
   target_compile_options_if_supported(test_api "-Wno-maybe-uninitialized")
   # gcc gives nonsensical warnings about variadic.h
   target_compile_options_if_supported(test_api "-Wno-unused-but-set-parameter")
+  target_compile_options_if_supported(test_api "-Wno-nonnull")
 endif()
 
 if(INSTALL_TEST)
