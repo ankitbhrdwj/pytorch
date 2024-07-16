@@ -3255,8 +3255,8 @@ def meta__int_mm(a, b):
 def meta__convert_weight_to_int4pack(w, inner_k_tiles):
     torch._check(w.dim() == 2, lambda: "w must be a 2D tensor")
     torch._check(
-        w.dtype is torch.int32,
-        lambda: f"expected w to be int32, got {w.dtype}",
+        w.dtype is torch.uint8,
+        lambda: f"expected w to be uint8, got {w.dtype}",
     )
     n = w.size(0)
     k = w.size(1)
@@ -5578,11 +5578,6 @@ def meta_sort(self, stable=None, dim=-1, descending=False, values=None, indices=
     return v, i
 
 
-@register_meta(aten.argsort.stable)
-def meta_argsort(self, *, stable, dim=-1, descending=False):
-    return meta_sort(self, stable=stable, dim=dim, descending=descending)[1]
-
-
 def rnn_cell_checkSizes(
     input_gates,
     hidden_gates,
@@ -5777,10 +5772,6 @@ def scalar_tensor(s, dtype=None, layout=None, device=None, pin_memory=None):
 def topk_meta(self, k, dim=-1, largest=True, sorted=True):
     # From aten/src/ATen/native/Sorting.cpp
     dim = maybe_wrap_dim(dim, self.dim(), wrap_scalar=True)
-    torch._check(
-        k >= 0 and k <= (self.size(dim) if self.dim() > 0 else 1),
-        lambda: "selected index k out of range",
-    )
     sliceSize = 1 if self.dim() == 0 else self.size(dim)
     torch._check(k >= 0 and k <= sliceSize, lambda: "k not in range for dimension")
 
@@ -5788,6 +5779,22 @@ def topk_meta(self, k, dim=-1, largest=True, sorted=True):
     if len(topKSize) > 0:
         topKSize[dim] = k
     return self.new_empty(topKSize), self.new_empty(topKSize, dtype=torch.int64)
+
+
+@register_meta([aten.kthvalue.default, aten.kthvalue.values])
+@out_wrapper("values", "indices")
+def kthvalue_meta(self, k, dim=-1, keepdim=False):
+    dim = maybe_wrap_dim(dim, self.dim(), wrap_scalar=True)
+    dimSize = self.size(dim) if self.dim() > 0 else 1
+    torch._check(
+        k >= 1 and k <= dimSize,
+        lambda: f"kthvalue(): selected number k out of range for dimension {dim}",
+    )
+
+    shape = list(self.shape[:dim] + self.shape[dim + 1 :])
+    if keepdim and self.dim() > 0:
+        shape.insert(dim, 1)
+    return self.new_empty(shape), self.new_empty(shape, dtype=torch.int64)
 
 
 legacy_contiguous_memory_format = torch.contiguous_format
@@ -6052,6 +6059,49 @@ def _check_for_unsupported_isin_dtype(dtype):
         dtype not in [torch.bool, torch.bfloat16, torch.complex128, torch.complex64],
         lambda: f"Unsupported input type encountered for isin(): {dtype}",
     )
+
+
+@register_meta(aten._embedding_bag_backward)
+def meta_embedding_bag_backward(
+    grad,
+    indices,
+    offsets,
+    offset2bag,
+    bag_size,
+    maximum_indices,
+    num_weights,
+    scale_grad_by_freq,
+    mode,
+    sparse,
+    per_sample_weights,
+    padding_idx=-1,
+):
+    if sparse:
+        return aten._embedding_bag_sparse_backward(
+            grad,
+            indices,
+            offsets,
+            offset2bag,
+            bag_size,
+            num_weights,
+            scale_grad_by_freq,
+            mode,
+            per_sample_weights,
+            padding_idx,
+        )
+    else:
+        return meta_embedding_bag_dense_backward(
+            grad,
+            indices,
+            offset2bag,
+            bag_size,
+            maximum_indices,
+            num_weights,
+            scale_grad_by_freq,
+            mode,
+            per_sample_weights,
+            padding_idx,
+        )
 
 
 @register_meta(aten._embedding_bag_dense_backward)
