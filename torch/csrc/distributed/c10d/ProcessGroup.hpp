@@ -163,6 +163,7 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
                     const c10::intrusive_ptr<::c10d::ProcessGroup>&,
                     const c10::intrusive_ptr<::c10d::ReduceOp>&,
                     const std::optional<at::Tensor>& sparse_indices,
+                    int64_t,
                     int64_t)>();
 
     return std::get<1>(op.call(
@@ -170,7 +171,7 @@ class TORCH_API ProcessGroup : public torch::CustomClassHolder {
         c10::intrusive_ptr<ProcessGroup>::unsafe_reclaim_from_nonowning(this),
         c10::make_intrusive<ReduceOp>(opts.reduceOp),
         opts.sparseIndices,
-        opts.timeout.count()));
+        opts.timeout.count(), opts.tag));
   }
 
   virtual c10::intrusive_ptr<Work> allreduce_coalesced(

@@ -54,7 +54,9 @@ c10::intrusive_ptr<c10::ivalue::Future> _AllReduceBySumCommHook::runHook(
     return state_->allreduce(tensors, opts)->getFuture();
   }
 #else
-  return state_->allreduce(tensors)->getFuture();
+  AllreduceOptions opts = AllreduceOptions();
+  opts.tag = bucket.getIndex();
+  return state_->allreduce(tensors, opts)->getFuture();
 #endif
 }
 
