@@ -3648,14 +3648,26 @@ c10::intrusive_ptr<Work> ProcessGroupNCCL::allreduce_impl(
         auto ncclDataType = getNcclDataType(input.scalar_type());
         auto ncclReduceOp =
             getNcclReduceOp(opts.reduceOp, input, ncclDataType, comm);
-        return ncclAllReduce(
-            input.data_ptr(),
-            output.data_ptr(),
-            input.numel(),
-            ncclDataType,
-            ncclReduceOp,
-            comm,
-            stream.stream());
+        if (opts.tag == -1) {
+          return ncclAllReduce(
+              input.data_ptr(),
+              output.data_ptr(),
+              input.numel(),
+              ncclDataType,
+              ncclReduceOp,
+              comm,
+              stream.stream());
+        } else {
+          return ncclAllReduceTagged(
+              input.data_ptr(),
+              output.data_ptr(),
+              input.numel(),
+              ncclDataType,
+              ncclReduceOp,
+              comm,
+              stream.stream(),
+              opts.tag);
+        }
       },
       OpType::ALLREDUCE,
       "nccl:all_reduce");

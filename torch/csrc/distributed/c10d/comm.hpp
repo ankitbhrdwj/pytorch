@@ -76,6 +76,10 @@ class TORCH_API GradBucket {
     return sparse_grad_indices_;
   }
 
+  size_t getBucketCount() const {
+    return bucket_count_;
+  }
+
  private:
   size_t index_;
   size_t bucket_count_;

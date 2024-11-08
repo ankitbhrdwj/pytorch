@@ -603,6 +603,12 @@ An enum-like class for built-in communication hooks: ``ALLREDUCE`` and ``FP16_CO
           },
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "_get_grad_buckets",
+          [](::c10d::Reducer& reducer) {
+            return reducer.get_grad_buckets(/* return_zero_tensors */ false);
+          },
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "_set_optimizer_in_backward",
           [](::c10d::Reducer& reducer) { reducer.set_optimizer_in_backward(); },
           py::call_guard<py::gil_scoped_release>())
