@@ -8,7 +8,7 @@ from typing import Callable, List, Optional, Union
 import torch
 import torch._inductor.runtime.runtime_utils
 from torch import Tensor
-from torch._dynamo.utils import counters
+from torch._dynamo.utils import counters, dynamo_timed
 from torch._inductor import utils
 from torch._inductor.autoheuristic.autoheuristic import (
     AHContext,
@@ -16,6 +16,8 @@ from torch._inductor.autoheuristic.autoheuristic import (
     LocalFeedback,
 )
 from torch._inductor.autoheuristic.autoheuristic_utils import (
+    context_add_strides,
+    context_add_using_tf32,
     pad_mm_operations,
     pad_mm_precondition,
 )
@@ -23,7 +25,6 @@ from torch._subclasses.fake_tensor import FakeTensor
 from torch.utils._mode_utils import no_dispatch
 
 from ...utils._triton import has_triton
-
 from ..pattern_matcher import (
     fwd_only,
     gen_register_replacement,
@@ -32,6 +33,7 @@ from ..pattern_matcher import (
     ReplaceFn,
     SearchFn,
 )
+
 
 aten = torch.ops.aten
 
@@ -318,6 +320,30 @@ def should_exclude_padding_time(match, arg_name):
     if not fetch_fake_tensors(match, (arg_name,))[0].is_contiguous():
         return False
 
+    # TODO - see issue https://githpub.com/pytorch/pytorch/issues/128889
+    # We would only able to completely plan these out if we were only doing
+    # first dimension padding. non-first we would still need a copy
+    # because these outputs are fixed dense.
+    cannot_plan_output = [
+        aten.mm.default,
+        aten.convolution.default,
+        aten.convolution_backward.default,
+        aten.bmm.default,
+        aten.addmm.default,
+        aten._scaled_dot_product_flash_attention.default,
+        aten._scaled_dot_product_efficient_attention.default,
+    ]
+
+    if node_def.target in cannot_plan_output:
+        return False
+
+    if (
+        node_def.target == aten.cat.default
+        and len(node_def.all_input_nodes)
+        > torch._inductor.config.max_pointwise_cat_inputs
+    ):
+        return False
+
     # optimistically assume we should be able to memory plan away
     # all non inputs
     return node_def.op != "placeholder"
@@ -338,11 +364,33 @@ def should_pad(key: str, ori_time, pad_time) -> bool:
     return should_pad
 
 
-def should_pad_bench(
+def should_pad_mm_bf16(dtype, M, N, K):
+    # always force pad for mm with bf16 when the following are satisfied to avoid perf regression
+    large_k_threshold_to_pad = torch._inductor.config.post_grad_fusion_options[
+        "pad_aten_mm_pass"
+    ].get("k_threshold_to_pad", 8388608)
+    if (
+        dtype is torch.bfloat16
+        and K > M
+        and K > N
+        and N % 2 == 1
+        and K >= large_k_threshold_to_pad
+        and torch.cuda.get_device_capability() < (9, 0)
+    ):  # doesnt repro on h100s:
+        return True
+    return False
+
+
+def should_pad_bench(*args, **kwargs):
+    with dynamo_timed("pad_mm_benchmark"):
+        return _should_pad_bench(*args, **kwargs)
+
+
+def _should_pad_bench(
     match, mat1: Tensor, mat2: Tensor, op, input: Optional[Tensor] = None
 ) -> bool:
     do_bench = functools.partial(
-        torch._inductor.runtime.runtime_utils.do_bench_gpu,
+        torch._inductor.runtime.benchmarking.benchmarker.benchmark_gpu,
         warmup=5,
     )
     m_padded_length = 0
@@ -382,6 +430,12 @@ def should_pad_bench(
             return False
 
         if torch._inductor.config.force_shape_pad:
+            return True
+
+        if (
+            "pad_aten_mm_pass" in torch._inductor.config.post_grad_fusion_options
+            and should_pad_mm_bf16(mat1.dtype, m, n, k)
+        ):
             return True
 
         if not has_triton():
@@ -427,6 +481,7 @@ def should_pad_bench(
         mat2_pad = mat2
 
         is_bmm = op is torch.ops.aten.bmm
+
         mat1_pre_padded = should_exclude_padding_time(match, "mat1")
         fns = []
         if mat1_pre_padded and (m_padded_length or k_padded_length):
@@ -514,7 +569,7 @@ def should_pad_bench(
                 fn()
 
         if (
-            torch._inductor.config.autoheuristic_mode != "OFF"
+            torch._inductor.config.run_autoheuristic("pad_mm")
             and op is torch.ops.aten.mm
         ):
             ah_should_pad = run_autoheuristic(
@@ -558,12 +613,8 @@ def get_context(
     context.add_feature("k", mat1.shape[1])
     context.add_feature("n", mat2.shape[1])
 
-    mat1_strides = mat1.stride()
-    mat2_strides = mat2.stride()
-    context.add_feature("mat1_stride_0", mat1_strides[0])
-    context.add_feature("mat1_stride_1", mat1_strides[1])
-    context.add_feature("mat2_stride_0", mat2_strides[0])
-    context.add_feature("mat2_stride_1", mat2_strides[1])
+    context_add_strides(context, "mat1", mat1.stride())
+    context_add_strides(context, "mat2", mat2.stride())
 
     context.add_feature("m_padded_length", m_padded_length)
     context.add_feature("k_padded_length", k_padded_length)
@@ -578,11 +629,7 @@ def get_context(
     context.add_feature("prepadded_mat1", mat1_pre_padded, is_categorical=True)
     context.add_feature("prepadded_mat2", mat2_pre_padded, is_categorical=True)
 
-    using_tf32 = "not_float_32"
-    if mat1.dtype == torch.float32:
-        using_tf32 = torch.backends.cuda.matmul.allow_tf32
-    context.add_feature("using_tf32", using_tf32, is_categorical=True)
-
+    context_add_using_tf32(context, mat1.dtype)
     return context
 
 
@@ -638,7 +685,7 @@ def run_autoheuristic(
     choice2should_pad = {orig_choice: False, pad_choice: True, "autotune": None}
     ah_should_pad = choice2should_pad.get(choice, None)
 
-    if torch._inductor.config.autoheuristic_mode == "COLLECT_DATA":
+    if torch._inductor.config.collect_autoheuristic(name):
         ah_ori_time = autoheuristic.get_collected_feedback(orig_choice)
         ah_pad_time = autoheuristic.get_collected_feedback(pad_choice)
 
@@ -670,7 +717,8 @@ def pad_mat1(mat1, *, m_padded_length, k_padded_length, is_bmm=False):
         if is_bmm:
             pad_arg.extend((0, 0))
         return aten.constant_pad_nd(mat1, pad_arg)
-    return mat1
+    else:
+        return mat1
 
 
 def pad_mat2(mat2, *, k_padded_length, n_padded_length, is_bmm=False):

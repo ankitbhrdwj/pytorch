@@ -366,7 +366,7 @@ Tensor select_batching_rule(const Tensor& self, int64_t dim, int64_t index) {
 }
 
 static int64_t getGradInputPhysicalDim(int64_t dim, IntArrayRef input_sizes, int64_t num_batch_dims) {
-  return maybe_wrap_dim(dim, input_sizes.size()) + num_batch_dims;
+  return maybe_wrap_dim(dim, static_cast<int64_t>(input_sizes.size())) + num_batch_dims;
 }
 
 Tensor select_backward_batching_rule(const Tensor& grad, IntArrayRef input_sizes, int64_t dim, int64_t index) {
@@ -558,7 +558,7 @@ static void checkBasicAsStridedValidForSlice(
       "rewrite the `as_strided` call as a sequence of PyTorch view operations");
 }
 
-Tensor _reshape_alias_batching_rule(const Tensor& self, IntArrayRef sizes, IntArrayRef strides) {
+Tensor _reshape_alias_batching_rule(const Tensor& self, IntArrayRef sizes, IntArrayRef strides [[maybe_unused]]) {
   return reshape_batching_rule(self, sizes);
 }
 

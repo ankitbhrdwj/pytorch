@@ -307,6 +307,17 @@ macro(torch_hip_get_arch_list store_var)
 endmacro()
 
 ##############################################################################
+# Get the XPU arch flags specified by TORCH_XPU_ARCH_LIST.
+# Usage:
+#   torch_xpu_get_arch_list(variable_to_store_flags)
+#
+macro(torch_xpu_get_arch_list store_var)
+  if(DEFINED ENV{TORCH_XPU_ARCH_LIST})
+    set(${store_var} $ENV{TORCH_XPU_ARCH_LIST})
+  endif()
+endmacro()
+
+##############################################################################
 # Get the NVCC arch flags specified by TORCH_CUDA_ARCH_LIST and CUDA_ARCH_NAME.
 # Usage:
 #   torch_cuda_get_nvcc_gencode_flag(variable_to_store_flags)
@@ -388,7 +399,6 @@ function(torch_compile_options libname)
     if(WERROR)
       list(APPEND private_compile_options
         -Werror
-        -Wno-strict-overflow
         -Werror=inconsistent-missing-override
         -Werror=inconsistent-missing-destructor-override
         -Werror=unused-function
@@ -405,14 +415,9 @@ function(torch_compile_options libname)
   target_compile_options(${libname} PRIVATE
       $<$<COMPILE_LANGUAGE:CXX>:${private_compile_options}>)
   if(USE_CUDA)
-    string(FIND "${private_compile_options}" " " space_position)
-    if(NOT space_position EQUAL -1)
-      message(FATAL_ERROR "Found spaces in private_compile_options='${private_compile_options}'")
-    endif()
-    # Convert CMake list to comma-separated list
-    string(REPLACE ";" "," private_compile_options "${private_compile_options}")
-    target_compile_options(${libname} PRIVATE
-        $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=${private_compile_options}>)
+    foreach(option IN LISTS private_compile_options)
+      target_compile_options(${libname} PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler ${option}>)
+    endforeach()
   endif()
 
   if(NOT WIN32 AND NOT USE_ASAN)

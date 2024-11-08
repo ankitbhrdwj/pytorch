@@ -26,6 +26,7 @@ from torch.testing._internal.common_dtype import (
     get_all_dtypes,
 )
 from torch.testing._internal.common_utils import (
+    IS_FBCODE,
     is_iterable_of_tensors,
     noncontiguous_like,
     OPINFO_SAMPLE_INPUT_INDEX,
@@ -34,8 +35,8 @@ from torch.testing._internal.common_utils import (
     TrackedInputIter,
 )
 from torch.testing._internal.opinfo import utils
-
 from torchgen.utils import dataclass_repr
+
 
 # Reasonable testing sizes for dimensions
 L = 20
@@ -728,6 +729,8 @@ class OpInfo:
     # dtypes this function is expected to work with on ROCM
     dtypesIfROCM: _dispatch_dtypes = None
 
+    dtypesIfHpu: _dispatch_dtypes = None
+
     # dtypes this function is expected to work with on XPU
     dtypesIfXPU: _dispatch_dtypes = None
 
@@ -739,6 +742,8 @@ class OpInfo:
 
     # backward dtypes this function is expected to work with on ROCM
     backward_dtypesIfROCM: _dispatch_dtypes = None
+
+    backward_dtypesIfHpu: _dispatch_dtypes = None
 
     # the following metadata describes the operators out= support
 
@@ -871,6 +876,8 @@ class OpInfo:
     supports_sparse_bsr: bool = None
     # whether the op supports sparse bsc inputs, defaults to False
     supports_sparse_bsc: bool = None
+    # whether the op supports nested jagged inputs, defaults to False
+    supports_njt: bool = None
 
     # whether the op promotes integer inputs to float
     promotes_int_to_float: bool = False
@@ -889,6 +896,8 @@ class OpInfo:
     supports_expanded_weight: bool = False
 
     is_factory_function: bool = False
+
+    skip_correctness_check_compile_vs_eager: bool = False
 
     def __post_init__(self):
         self._original_opinfo_args = asdict(self).copy()
@@ -955,6 +964,16 @@ class OpInfo:
                 else self.dtypes
             )
         )
+        self.backward_dtypesIfHpu = (
+            set(self.backward_dtypesIfHpu)
+            if self.backward_dtypesIfHpu is not None
+            else (
+                self.backward_dtypes
+                if self.backward_dtypes is not None
+                else self.dtypes
+            )
+        )
+
         self.backward_dtypes = (
             set(self.backward_dtypes)
             if self.backward_dtypes is not None
@@ -971,6 +990,10 @@ class OpInfo:
         )
         self.dtypesIfXPU = (
             set(self.dtypesIfXPU) if self.dtypesIfXPU is not None else self.dtypesIfCUDA
+        )
+
+        self.dtypesIfHpu = (
+            set(self.dtypesIfHpu) if self.dtypesIfHpu is not None else self.dtypes
         )
 
         # NOTE: if the op is unspecified it is assumed to be under the torch namespace
@@ -1032,6 +1055,9 @@ class OpInfo:
             self.supports_sparse_bsc = self.sample_inputs_sparse_bsc_func is not None
         if self.sample_inputs_sparse_bsc_func is None:
             self.sample_inputs_sparse_bsc_func = self._sample_inputs_unspecified
+
+        if self.supports_njt is None:
+            self.supports_njt = False
 
         # We run the sampling functions without tracking the gradiends of the creation of inputs
         self.sample_inputs_func = torch.no_grad()(self.sample_inputs_func)
@@ -1388,6 +1414,8 @@ class OpInfo:
             return self.dtypesIfROCM if TEST_WITH_ROCM else self.dtypesIfCUDA
         if device_type == "xpu":
             return self.dtypesIfXPU
+        if device_type == "hpu":
+            return self.dtypesIfHpu
         return self.dtypes
 
     def supported_backward_dtypes(self, device_type):
@@ -1404,6 +1432,8 @@ class OpInfo:
                 if TEST_WITH_ROCM
                 else self.backward_dtypesIfCUDA
             )
+        elif device_type == "hpu":
+            backward_dtypes = self.backward_dtypesIfHpu
         else:
             backward_dtypes = self.backward_dtypes
 
@@ -1416,14 +1446,16 @@ class OpInfo:
         return dtype in self.supported_dtypes(device_type)
 
     @property
+    def full_name(self):
+        """Returns a full name that helps to uniquely identify this OpInfo."""
+        variant = "." + self.variant_test_name if self.variant_test_name else ""
+        # example: "normal.in_place" where "normal" is the name and "in_place" is the variant
+        return f"{self.name}{variant}"
+
+    @property
     def formatted_name(self):
         """Returns a formatted full name for this OpInfo that can be used in test names."""
-        variant = (
-            "_" + self.variant_test_name.replace(".", "_")
-            if self.variant_test_name
-            else ""
-        )
-        return f"{self.name.replace('.', '_')}{variant}"
+        return self.full_name.replace(".", "_")
 
 
 def _generate_reduction_inputs(device, dtype, requires_grad, **kwargs):
@@ -2786,7 +2818,14 @@ class ForeachFuncInfo(OpInfo):
             foreach_method = foreach_method_inplace
             torch_ref_method = torch_ref_inplace
 
-        self.dtypes = _dispatch_dtypes(get_all_dtypes(include_qint=False))
+        # We disable all complex128 tests internally for foreach due to reported flakiness
+        # tracked in #139648
+        supported_dtypes = get_all_dtypes(include_qint=False)
+        if IS_FBCODE:
+            supported_dtypes = [
+                x for x in supported_dtypes if x is not torch.complex128
+            ]
+        self.dtypes = _dispatch_dtypes(supported_dtypes)
 
         self.op = foreach_method
         self.method_variant = foreach_method

@@ -97,7 +97,7 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor, Tensor> _lstm_mps(const Tenso
   // Projections are not currently supported, raise an error if needed
   bool has_projections = (hx[0].size(2) != hx[1].size(2));
   if (has_projections) {
-    AT_ERROR("LSTM with projections is not currently supported with MPS.");
+    TORCH_CHECK(false, "LSTM with projections is not currently supported with MPS.");
   }
 
   std::vector<Tensor> kernel_weights;
@@ -356,9 +356,11 @@ std::tuple<Tensor, std::vector<Tensor>, std::vector<Tensor>> lstm_mps_backward(c
                                                                                bool bidirectional,
                                                                                bool batch_first) {
   using namespace mps;
-  const Tensor& grad_y_r = c10::value_or_else(grad_y_opt, [] { return Tensor(); });
-  const Tensor& grad_hy_r = c10::value_or_else(grad_hy_opt, [] { return Tensor(); });
-  const Tensor& grad_cy_r = c10::value_or_else(grad_cy_opt, [] { return Tensor(); });
+  bool is_macos_14_4_or_newer = is_macos_13_or_newer(MacOSVersion::MACOS_VER_14_4_PLUS);
+
+  const Tensor& grad_y_r = grad_y_opt.value_or(Tensor());
+  const Tensor& grad_hy_r = grad_hy_opt.value_or(Tensor());
+  const Tensor& grad_cy_r = grad_cy_opt.value_or(Tensor());
   const auto grad_hy = grad_hy_r.defined() ? grad_hy_r : at::zeros_like(hx[0], input.options());
   const auto grad_cy = grad_cy_r.defined() ? grad_cy_r : at::zeros_like(hx[1], input.options());
 
@@ -529,6 +531,10 @@ std::tuple<Tensor, std::vector<Tensor>, std::vector<Tensor>> lstm_mps_backward(c
                                                   start:i - num_layers
                                                  length:1
                                                    name:nil];
+          if (is_macos_14_4_or_newer) {
+            // Prevents shape optimization bug in kernel when num_layers > 2
+            iterationInputTensor_ = [mpsGraph identityWithTensor:iterationInputTensor_ name:nil];
+          }
           iterationInputTensor_ = [mpsGraph squeezeTensor:iterationInputTensor_ axis:0 name:nil];
         }
 
