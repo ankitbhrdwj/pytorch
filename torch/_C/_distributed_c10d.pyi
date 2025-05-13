@@ -133,6 +133,7 @@ class BroadcastOptions:
 class AllreduceOptions:
     reduceOp: ReduceOp
     timeout: timedelta
+    tag: int
 
 class AllreduceCoalescedOptions(AllreduceOptions): ...
 

@@ -2632,7 +2632,7 @@ def broadcast(tensor, src, group=None, async_op=False):
 
 
 @_exception_logger
-def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
+def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False, tag=False):
     """
     Reduces the tensor data across all machines in a way that all get the final result.
 
@@ -2692,6 +2692,9 @@ def all_reduce(tensor, op=ReduceOp.SUM, group=None, async_op=False):
 
     opts = AllreduceOptions()
     opts.reduceOp = op
+    if tag == True:
+        opts.tag = 1
+
     if group is None:
         group = _get_default_group()
 

@@ -981,7 +981,8 @@ This class does not support ``__members__`` property.)");
   py::class_<::c10d::AllreduceOptions>(module, "AllreduceOptions")
       .def(py::init<>())
       .def_readwrite("reduceOp", &::c10d::AllreduceOptions::reduceOp)
-      .def_readwrite("timeout", &::c10d::AllreduceOptions::timeout);
+      .def_readwrite("timeout", &::c10d::AllreduceOptions::timeout)
+      .def_readwrite("tag", &::c10d::AllreduceOptions::tag);
 
   py::class_<::c10d::AllreduceCoalescedOptions>(
       module, "AllreduceCoalescedOptions")
